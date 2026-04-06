@@ -474,8 +474,29 @@ window.addEventListener('resize', resize); resize();
         }
     }
 
-    function loop() { update(); draw(); requestAnimationFrame(loop); }
-    loop();
+let lastTime = 0;
+    const fps = 30; // Hedeflenen FPS değeri
+    const fpsInterval = 1000 / fps; // Kareler arası geçmesi gereken minimum milisaniye
+
+    function loop(timestamp) {
+        // Döngüyü bir sonraki kare için sıraya koy
+        requestAnimationFrame(loop);
+
+        if (!lastTime) lastTime = timestamp;
+        const elapsed = timestamp - lastTime;
+
+        // Yalnızca belirlenen süre (1000ms / 30 = ~33.3ms) geçtiyse oyunu güncelle ve çiz
+        if (elapsed > fpsInterval) {
+            // Zaman sapmalarını önlemek için lastTime'ı hassas bir şekilde güncelle
+            lastTime = timestamp - (elapsed % fpsInterval);
+            
+            update();
+            draw();
+        }
+    }
+    
+    // Oyunu başlat
+    requestAnimationFrame(loop);
 </script>
 </body>
 </html>
