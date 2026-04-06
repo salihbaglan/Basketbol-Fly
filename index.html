@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Basketball Pro</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background-color: #050505;
+            display: flex; justify-content: center; align-items: center;
+            font-family: 'Segoe UI', sans-serif;
+            touch-action: none; user-select: none; overflow: hidden;
+        }
+        #game-wrapper {
+            position: relative;
+            box-shadow: 0 0 40px rgba(0, 0, 0, 0.9);
+            background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+            overflow: hidden;
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+
+    <div id="game-wrapper">
+        <canvas id="gameCanvas" width="450" height="800"></canvas>
+    </div>
+
+<script>
+    // --- TEST MODU KAPATILDI ---
+    const isTest = false; 
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Audio Setup
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    let audioCtx;
+    function initAudio() { if (!audioCtx) audioCtx = new AudioContext(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
+    function playSound(type) {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        const now = audioCtx.currentTime;
+        if (type === 'jump') {
+            osc.type = 'sine'; osc.frequency.setValueAtTime(300, now); osc.frequency.exponentialRampToValueAtTime(500, now + 0.1);
+            gain.gain.setValueAtTime(0.1, now); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+            osc.start(now); osc.stop(now + 0.1);
+        } else if (type === 'score') {
+            osc.type = 'triangle'; osc.frequency.setValueAtTime(800, now); osc.frequency.setValueAtTime(1400, now + 0.1);
+            gain.gain.setValueAtTime(0.1, now); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+            osc.start(now); osc.stop(now + 0.2);
+        } else if (type === 'buy') {
+            osc.type = 'sine'; osc.frequency.setValueAtTime(500, now); osc.frequency.setValueAtTime(800, now + 0.05); osc.frequency.setValueAtTime(1100, now + 0.1);
+            gain.gain.setValueAtTime(0.1, now); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+            osc.start(now); osc.stop(now + 0.2);
+        }
+    }
+
+    // Ekran boyutlandırma
+    function resize() {
+        const wrapper = document.getElementById('game-wrapper');
+        let w = window.innerWidth, h = window.innerHeight;
+        if (w > 450 && h > 800) { w = 450; h = 800; }
+        const ratio = 450 / 800;
+        if (w / h < ratio) { 
+            wrapper.style.width = w + 'px'; wrapper.style.height = (w / ratio) + 'px'; 
+        } else { 
+            wrapper.style.height = h + 'px'; wrapper.style.width = (h * ratio) + 'px'; 
+        }
+    }
+window.addEventListener('resize', resize); resize();
+
+    function drawRoundedRect(ctx, x, y, width, height, radius) {
+        ctx.beginPath(); ctx.moveTo(x + radius, y); ctx.lineTo(x + width - radius, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + radius); ctx.lineTo(x + width, y + height - radius);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height); ctx.lineTo(x + radius, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - radius); ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y); ctx.closePath();
+    }
+
+    // State Variables
+    let state = 0; 
+    let totalCoins = isTest ? 99999 : (parseInt(localStorage.getItem('bball_coins_v4')) || 0);
+    let unlockedBalls = isTest ? [0,1,2,3,4,5,6,7,8,9] : (JSON.parse(localStorage.getItem('bball_unlocked_v4')) || [0]);
+    let selectedBallIndex = parseInt(localStorage.getItem('bball_selected_v4')) || 0;
+    
+    if (!unlockedBalls.includes(selectedBallIndex)) selectedBallIndex = 0;
+
+    let score = 0;
+    let frames = 0;
+
+    const ballTypes = [
+        { r: 21, gravity: 0.45, jump: -8.0, color: '#ed8936', price: 0, type: 'basket' },
+        { r: 21, gravity: 0.52, jump: -8.5, color: '#ffffff', price: 50, type: 'soccer' },
+        { r: 22, gravity: 0.35, jump: -7.0, color: '#f6e05e', price: 100, type: 'volley' },
+        { r: 16, gravity: 0.55, jump: -9.5, color: '#a3e635', price: 250, type: 'tennis' },
+        { r: 24, gravity: 0.75, jump: -11.0, color: '#2d3748', price: 500, type: 'bowling' },
+        { r: 21, gravity: 0.48, jump: -8.2, color: '#1a202c', price: 1000, type: '8ball' },
+        { r: 21, gravity: 0.42, jump: -8.5, color: '#d4af37', price: 1500, type: 'gold' },
+        { r: 18, gravity: 0.60, jump: -9.0, color: '#81e6d9', price: 2000, type: 'marble' },
+        { r: 23, gravity: 0.40, jump: -8.2, color: '#f56565', price: 3000, type: 'fire' },
+        { r: 25, gravity: 0.50, jump: -9.5, color: '#6b46c1', price: 5000, type: 'void' }
+    ];
+
+    let ball = { x: 120, y: 400, prevY: 400, v: 0, rotation: 0 };
+    let hoops = [];
+    let speed = 2.5;
+    let spawnRate = 140;
+
+    const RIM_RX = 38; 
+    const RIM_RY = 13; 
+    const NET_LEN = 70; 
+    const NET_BOT = 20;
+
+    function resetGame() {
+        const bType = ballTypes[selectedBallIndex];
+        ball.y = canvas.height / 2; ball.v = bType.jump; ball.rotation = 0;
+        hoops = []; score = 0; frames = 0;
+        speed = 2.5; spawnRate = 140;
+        state = 1; playSound('jump');
+    }
+
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleInput(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false});
+    canvas.addEventListener('mousedown', (e) => { handleInput(e.clientX, e.clientY); });
+
+    function handleInput(ix, iy) {
+        initAudio();
+        const rect = canvas.getBoundingClientRect();
+        const x = (ix - rect.left) * (450 / rect.width);
+        const y = (iy - rect.top) * (800 / rect.height);
+
+        if (state === 0) {
+            if (x > 360 && y > 710) state = 3; 
+            else resetGame();
+        } else if (state === 1) {
+            ball.v = ballTypes[selectedBallIndex].jump; playSound('jump');
+        } else if (state === 2) {
+            state = 0;
+        } else if (state === 3) {
+            if (x > 380 && y < 70) state = 0; 
+            else {
+                const col = Math.floor((x - 25) / 135);
+                const row = Math.floor((y - 120) / 160);
+                const idx = row * 3 + col;
+                if (idx >= 0 && idx < ballTypes.length && x > 25 && x < 430) {
+                    if (unlockedBalls.includes(idx)) {
+                        selectedBallIndex = idx;
+                        localStorage.setItem('bball_selected_v4', idx);
+                        playSound('buy');
+                    } else if (totalCoins >= ballTypes[idx].price) {
+                        totalCoins -= ballTypes[idx].price;
+                        unlockedBalls.push(idx);
+                        selectedBallIndex = idx;
+                        localStorage.setItem('bball_coins_v4', totalCoins);
+                        localStorage.setItem('bball_unlocked_v4', JSON.stringify(unlockedBalls));
+                        localStorage.setItem('bball_selected_v4', idx);
+                        playSound('buy');
+                    }
+                }
+            }
+        }
+    }
+
+    function update() {
+        if (state === 1) {
+            speed = Math.min(4.8, 2.5 + (score * 0.04));
+            spawnRate = Math.max(85, Math.floor(140 - (score * 1.1)));
+            
+            const b = ballTypes[selectedBallIndex];
+            ball.prevY = ball.y; ball.v += b.gravity; ball.y += ball.v; ball.rotation += ball.v * 0.05;
+            
+            if (ball.y < b.r) { ball.y = b.r; ball.v = 0; }
+            if (ball.y + b.r > canvas.height) { 
+                state = 2; 
+                if (!isTest) {
+                    totalCoins += score; 
+                    localStorage.setItem('bball_coins_v4', totalCoins);
+                }
+            }
+  if (frames % spawnRate === 0) {
+                hoops.push({ x: canvas.width + RIM_RX + 20, y: Math.random() * 400 + 200, scored: false, passed: false, swishTimer: 0 });
+            }
+
+            hoops.forEach(h => {
+                h.x -= speed;
+                if (h.swishTimer > 0) h.swishTimer -= 0.05;
+                if (h.swishTimer < 0) h.swishTimer = 0;
+
+                let rimLeft = h.x - RIM_RX;
+                let rimRight = h.x + RIM_RX;
+
+                if (!h.passed) {
+                    if (!h.scored && ball.x > rimLeft && ball.x < rimRight) {
+                        if (ball.prevY <= h.y && ball.y > h.y) { h.scored = true; score++; playSound('score'); }
+                    }
+                    if (h.scored && ball.prevY <= h.y + NET_LEN && ball.y > h.y + NET_LEN) {
+                        h.swishTimer = 1.0;
+                    }
+                    if (ball.x - b.r > rimRight + 15) h.passed = true;
+                }
+            });
+            hoops = hoops.filter(h => h.x > -150);
+            frames++;
+        }
+    }
+
+    function drawBall(cx, cy, r, rot, type, scale = 1) {
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(rot); ctx.scale(scale, scale);
+        
+        if (type === 'basket') {
+            let grad = ctx.createRadialGradient(-r/3, -r/3, 1, 0, 0, r);
+            grad.addColorStop(0, '#ffb84d'); grad.addColorStop(0.4, '#ed8936'); grad.addColorStop(1, '#c05621');
+            ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = '#1a0500'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(-r, 0); ctx.lineTo(r, 0); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(0, r); ctx.stroke();
+            ctx.beginPath(); ctx.arc(r+4, 0, r, 2, 4.3); ctx.stroke();
+            ctx.beginPath(); ctx.arc(-r-4, 0, r, -1.1, 1.1); ctx.stroke();
+            
+        } else if (type === 'soccer') {
+            ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#111'; ctx.beginPath();
+            for(let i=0; i<5; i++) {
+                let ang = i * 2 * Math.PI / 5 - Math.PI / 2;
+                ctx.lineTo(Math.cos(ang) * r * 0.4, Math.sin(ang) * r * 0.4);
+            }
+            ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+            for(let i=0; i<5; i++) {
+                let ang = i * 2 * Math.PI / 5 - Math.PI / 2;
+                let px1 = Math.cos(ang)*r*0.4, py1 = Math.sin(ang)*r*0.4;
+                let px2 = Math.cos(ang)*r*0.9, py2 = Math.sin(ang)*r*0.9;
+                ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(px2, py2);
+                ctx.lineTo(Math.cos(ang-0.3)*r, Math.sin(ang-0.3)*r);
+                ctx.lineTo(Math.cos(ang+0.3)*r, Math.sin(ang+0.3)*r); ctx.fill();
+            }
+            let sGrad = ctx.createRadialGradient(-r/3, -r/3, r*0.1, 0, 0, r);
+            sGrad.addColorStop(0, 'rgba(0,0,0,0)'); sGrad.addColorStop(1, 'rgba(0,0,0,0.5)');
+            ctx.fillStyle = sGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+
+        } else if (type === 'volley') {
+            let vGrad = ctx.createRadialGradient(-r/3, -r/3, r*0.1, 0, 0, r);
+            vGrad.addColorStop(0, '#fefce8'); vGrad.addColorStop(1, '#ecc94b'); 
+            ctx.fillStyle = vGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#2b6cb0';
+            ctx.beginPath(); ctx.arc(0, 0, r, 0.4, 2.6); ctx.arc(0, r*1.6, r*1.3, 4.5, 5.5, true); ctx.fill();
+            ctx.beginPath(); ctx.arc(0, 0, r, 3.5, 5.7); ctx.arc(0, -r*1.6, r*1.3, 1.4, 2.5, true); ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.stroke();
+
+        } else if (type === 'tennis') {
+            let tGrad = ctx.createRadialGradient(-r/3, -r/3, r*0.1, 0, 0, r);
+            tGrad.addColorStop(0, '#d9f99d'); tGrad.addColorStop(0.7, '#84cc16'); tGrad.addColorStop(1, '#3f6212');
+            ctx.fillStyle = tGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, r*0.15); ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.arc(r*0.6, 0, r*0.7, 1.8, 4.5); ctx.stroke();
+            ctx.beginPath(); ctx.arc(-r*0.6, 0, r*0.7, -1.3, 1.3); ctx.stroke();
+
+        } else if (type === 'bowling') {
+            let bGrad = ctx.createRadialGradient(-r/3, -r/3, 2, 0, 0, r);
+            bGrad.addColorStop(0, '#6b21a8'); bGrad.addColorStop(1, '#000'); 
+            ctx.fillStyle = bGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.beginPath(); ctx.ellipse(-r*0.25, -r*0.4, r*0.4, r*0.15, -0.4, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#000';
+            ctx.beginPath(); ctx.ellipse(r*0.15, -r*0.25, r*0.12, r*0.15, 0.2, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(r*0.5, -r*0.1, r*0.12, r*0.15, 0.4, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(r*0.25, r*0.2, r*0.15, r*0.18, 0.1, 0, Math.PI*2); ctx.fill();
+ } else if (type === '8ball') {
+            let eGrad = ctx.createRadialGradient(-r/4, -r/4, 1, 0, 0, r);
+            eGrad.addColorStop(0, '#444'); eGrad.addColorStop(0.3, '#111'); eGrad.addColorStop(1, '#000');
+            ctx.fillStyle = eGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.beginPath(); ctx.ellipse(-r*0.3, -r*0.4, r*0.3, r*0.1, -0.3, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(r*0.1, r*0.1, r*0.4, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#000'; ctx.font = `bold ${r*0.45}px Arial`; ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText('8', r*0.1, r*0.1);
+
+        } else if (type === 'gold') {
+            let gGrad = ctx.createLinearGradient(-r, -r, r, r);
+            gGrad.addColorStop(0, '#fef08a'); gGrad.addColorStop(0.2, '#ca8a04'); 
+            gGrad.addColorStop(0.5, '#fef08a'); gGrad.addColorStop(0.8, '#854d0e'); gGrad.addColorStop(1, '#ca8a04');
+            ctx.fillStyle = gGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.beginPath(); ctx.moveTo(-r*0.4, -r*0.6); ctx.lineTo(-r*0.2, -r*0.4); 
+            ctx.lineTo(0, -r*0.6); ctx.lineTo(-r*0.2, -r*0.8); ctx.fill();
+
+        } else if (type === 'marble') {
+            let mGrad = ctx.createRadialGradient(-r/3, -r/3, r*0.1, 0, 0, r);
+            mGrad.addColorStop(0, '#ccfbf1'); mGrad.addColorStop(1, '#0f766e');
+            ctx.fillStyle = mGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)'; ctx.lineWidth = r*0.3; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(-r*0.7, 0); ctx.quadraticCurveTo(0, -r*0.8, r*0.7, r*0.2); ctx.stroke();
+            ctx.strokeStyle = 'rgba(13, 148, 136, 0.6)'; ctx.lineWidth = r*0.2;
+            ctx.beginPath(); ctx.moveTo(-r*0.4, r*0.5); ctx.quadraticCurveTo(0, 0, r*0.6, -r*0.4); ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.4)';
+            ctx.beginPath(); ctx.arc(-r*0.3, -r*0.3, r*0.2, 0, Math.PI*2); ctx.fill();
+
+        } else if (type === 'fire') {
+            let fGrad = ctx.createRadialGradient(0, r*0.2, 0, 0, 0, r);
+            fGrad.addColorStop(0, '#fef08a'); fGrad.addColorStop(0.4, '#ea580c'); fGrad.addColorStop(1, '#7f1d1d');
+            ctx.fillStyle = fGrad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#fef08a';
+            ctx.beginPath(); ctx.moveTo(-r*0.4, r*0.4); 
+            ctx.quadraticCurveTo(-r*0.2, -r*0.2, -r*0.6, -r*0.5); ctx.quadraticCurveTo(0, -r*0.1, r*0.2, -r*0.7); 
+            ctx.quadraticCurveTo(r*0.2, -r*0.1, r*0.6, -r*0.3); ctx.quadraticCurveTo(r*0.4, r*0.4, 0, r*0.6); ctx.fill();
+
+        } else if (type === 'void') {
+            let v2Grad = ctx.createRadialGradient(0, 0, r*0.3, 0, 0, r);
+            v2Grad.addColorStop(0, '#000'); v2Grad.addColorStop(0.7, '#6b21a8'); v2Grad.addColorStop(1, '#fdf4ff');
+            ctx.fillStyle = v2Grad; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = '#e9d5ff'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.ellipse(0, 0, r*0.8, r*0.3, -0.4, 0, Math.PI*2); ctx.stroke();
+            const starPos = [[-0.6, -0.4], [0.5, -0.6], [0.7, 0.4], [-0.4, 0.5], [0.1, 0.7]];
+            starPos.forEach(p => {
+                ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(p[0]*r, p[1]*r, r*0.06, 0, Math.PI*2); ctx.fill();
+            });
+        }
+        ctx.restore();
+    }
+
+    function drawNet(h, isFront) {
+        let startAngle = isFront ? 0 : Math.PI;
+        let steps = 6;     
+        let segments = 5;  
+        let b = ballTypes[selectedBallIndex];
+
+        ctx.strokeStyle = 'rgba(230, 240, 250, 0.75)';
+        ctx.lineWidth = 1.5;
+        ctx.lineCap = 'round';
+
+        let isBallInside = h.scored && Math.abs(ball.x - h.x) < RIM_RX && ball.y >= h.y - 10 && ball.y <= h.y + NET_LEN + b.r + 10;
+
+        function getNode(j, k) {
+            let theta = startAngle + (j / steps) * Math.PI;
+            let pct = k / segments; 
+            
+            let baseR = RIM_RX * (1 - pct) + NET_BOT * pct; 
+            let yBase = h.y + pct * NET_LEN;
+            let r = baseR;
+
+            if (isBallInside) {
+                let dist = Math.abs(yBase - ball.y);
+                if (dist < b.r + 10) { 
+                    let bulge = Math.cos((dist / (b.r + 10)) * Math.PI / 2); 
+                    let targetR = b.r + 3; 
+                    if (r < targetR) r += (targetR - r) * bulge; 
+                    yBase += bulge * 12 * pct; 
+                }
+            } 
+            else if (h.swishTimer > 0) {
+                let snap = Math.sin(h.swishTimer * Math.PI); 
+                yBase -= snap * 25 * pct; 
+                r += snap * 8 * pct;      
+            }
+
+            let X = h.x + r * Math.cos(theta);
+            let Y = yBase + r * (RIM_RY / RIM_RX) * Math.sin(theta);
+            return {x: X, y: Y};
+        }
+
+        ctx.beginPath();
+        for (let j = 0; j <= steps; j++) {
+            for (let k = 0; k <= segments; k++) {
+                let pos = getNode(j, k);
+                if (k === 0) ctx.moveTo(pos.x, pos.y);
+                else ctx.lineTo(pos.x, pos.y);
+            }
+        }
+        ctx.stroke();
+
+        ctx.beginPath();
+        for (let k = 1; k <= segments; k++) {
+            for (let j = 0; j <= steps; j++) {
+                let pos = getNode(j, k);
+                if (j === 0) ctx.moveTo(pos.x, pos.y);
+                else ctx.lineTo(pos.x, pos.y);
+            }
+        }
+        ctx.stroke();
+    }
+
+
+    function draw() {
+        let g = ctx.createRadialGradient(canvas.width/2, canvas.height/3, 50, canvas.width/2, canvas.height/2, canvas.height);
+        g.addColorStop(0, '#1e293b'); g.addColorStop(1, '#020617');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (state === 3) {
+            ctx.fillStyle = 'white'; ctx.font = 'bold 30px Arial'; ctx.textAlign = 'center';
+            ctx.fillText(totalCoins, 225, 80); 
+            
+            ballTypes.forEach((bt, i) => {
+                const x = 90 + (i % 3) * 135;
+                const y = 200 + Math.floor(i / 3) * 150;
+                drawBall(x, y - 40, 30, 0, bt.type, 1);
+                
+                const isOwned = unlockedBalls.includes(i);
+                const isSelected = selectedBallIndex === i;
+                ctx.fillStyle = isOwned ? (isSelected ? '#48bb78' : '#cbd5e0') : '#ecc94b';
+                ctx.font = 'bold 20px Arial';
+                ctx.fillText(isOwned ? '✔' : bt.price, x, y + 20); 
+            });
+            ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(410, 40, 20, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = 'white'; ctx.font = 'bold 20px Arial'; ctx.fillText('X', 410, 47);
+            return;
+        }
+
+        hoops.forEach(h => {
+            let backboardX = h.x + RIM_RX + 8;
+            
+            ctx.fillStyle = 'rgba(240, 248, 255, 0.15)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = 4;
+            drawRoundedRect(ctx, backboardX, h.y - 70, 8, 120, 3);
+            ctx.fill(); ctx.stroke();
+
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(backboardX - 1, h.y - 45, 4, 40);
+
+            ctx.fillStyle = '#b45309';
+            ctx.fillRect(h.x + RIM_RX, h.y - 3, 8, 6);
+
+            ctx.beginPath();
+            ctx.ellipse(h.x, h.y, RIM_RX, RIM_RY, 0, Math.PI, Math.PI * 2);
+            ctx.strokeStyle = '#9c2a00'; 
+            ctx.lineWidth = 6;
+            ctx.stroke();
+
+            drawNet(h, false); 
+        });
+
+        const bType = ballTypes[selectedBallIndex];
+        drawBall(ball.x, ball.y, bType.r, ball.rotation, bType.type);
+
+        hoops.forEach(h => {
+            ctx.beginPath();
+            ctx.ellipse(h.x, h.y, RIM_RX, RIM_RY, 0, 0, Math.PI);
+            ctx.strokeStyle = '#f94c00'; 
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.ellipse(h.x, h.y, RIM_RX, RIM_RY, 0, 0, Math.PI);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            drawNet(h, true);
+        });
+
+        ctx.textAlign = 'center';
+        if (state === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.font='bold 180px Arial'; ctx.fillText(score, 225, 450);
+            ctx.fillStyle = 'white'; ctx.font='bold 32px Arial'; ctx.fillText('TAP TO START', 225, 300);
+            if(isTest) {
+               ctx.fillStyle = '#ef4444'; ctx.font='14px Arial'; ctx.fillText('TEST MODE ON', 225, 330); 
+            }
+            ctx.fillStyle='#ffffff'; drawRoundedRect(ctx, 380, 720, 50, 50, 10); ctx.fill();
+            ctx.fillStyle='white'; ctx.font='24px Arial'; ctx.fillText('🛒', 405, 755);
+        } else if (state === 1) {
+            ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.font='bold 140px Arial'; ctx.fillText(score, 225, 160);
+        } else if (state === 2) {
+            ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,450,800);
+            ctx.fillStyle='#ef4444'; ctx.font='bold 46px Arial'; ctx.fillText('GAME OVER', 225, 350);
+            ctx.fillStyle='#f94c00'; ctx.font='bold 32px Arial'; ctx.fillText('SCORE: ' + score, 225, 420);
+        }
+    }
+
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+    loop();
+</script>
+</body>
+</html>
+
